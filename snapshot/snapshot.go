@@ -60,7 +60,7 @@ type HeliusTransaction struct {
 const PumpAMM = "B56BWXyJPZABa79JPV3AmghFieK8zLaLV1iaUmq5PvKd"
 const WrappedSOL = "So11111111111111111111111111111111111111112"
 const AnnouncementTimestamp = 1776976115
-const TokenOrigin = 1772136000 // Feb 26
+const TokenOrigin = 1772006401 // Feb 25
 
 func Run(args []string) {
 	apiKey := os.Getenv("HELIUS_API_KEY")
@@ -230,6 +230,7 @@ func fetchAffectedWallets(apiKey, mint string) ([]string, error) {
 	return result, nil
 }
 
+// go run main.go wallet <address>
 func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, error) {
 	var all []HeliusTransaction
 	before := ""

@@ -16,3 +16,11 @@ type WalletHistory struct {
 	Buys  []WalletEvent
 	Sells []WalletEvent
 }
+
+type Position struct {
+	Wallet        string
+	Transactions  int
+	SOL           float64
+	Token         float64
+	PercentSupply float64
+}
