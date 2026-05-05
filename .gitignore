@@ -33,7 +33,18 @@ go.work.sum
 
 # json
 json/affected.json
+json/bots.json
+json/claimed.json
+json/eligible_histories.json
+json/eligible.json
 json/histories.json
+json/holders.json
+json/ineligible.json
+json/multiple.json
+json/test.json
+json/thirdparty_histories.json
+json/thirdparty.json
+
 
 # Compiled binary
 whole-pump

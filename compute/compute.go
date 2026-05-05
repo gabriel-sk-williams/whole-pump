@@ -21,13 +21,14 @@ func Run(args []string) {
 	histories, err := loadHistories(path)
 	checkFatal(err)
 
+	fmt.Println("lenymo", len(histories))
 	// printNumberOfTransactions(histories)
 
 	computeLosses(histories)
 }
 
 func loadHistories(path string) (map[string]model.WalletHistory, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(fmt.Sprintf("json/%s", path))
 	if err != nil {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
@@ -70,9 +71,14 @@ func computeLosses(histories map[string]model.WalletHistory) {
 		return cmp.Compare(a.SOL, b.SOL)
 	})
 
+	var totalTokens float64
 	for _, p := range positionsBeforeCrash {
+		totalTokens += p.Token
 		fmt.Printf("%s (%d txs) \n    SOL: %f\n    Tokens: %f  (%f%%) \n", truncate(p.Wallet), p.Transactions, p.SOL, p.Token, p.PercentSupply)
 	}
+
+	totalPercentSupply := totalTokens / 1000000000.0 * 100
+	fmt.Printf("Total Tokens: %f  (%f%%) \n", totalTokens, totalPercentSupply)
 }
 
 func computePositionBeforeTimestamp(wh model.WalletHistory, t int64) (float64, float64) {

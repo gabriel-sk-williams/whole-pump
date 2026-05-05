@@ -67,16 +67,24 @@ func Run(args []string) {
 	mint := os.Getenv("TOKEN_ADDRESS")
 
 	switch args[0] {
+	case "eligible":
+		eligible, ineligible, err := getEligible()
+		checkFatal(err)
+		writeWalletsJSON(eligible, "json/eligible.json")
+		writeWalletsJSON(ineligible, "json/ineligible.json")
 	case "holders":
-		fetchCurrentHolders(apiKey, mint)
+		all, err := fetchCurrentHolders(apiKey, mint)
+		checkFatal(err)
+		writeHoldersJSON(all, "json/holders.json")
 	case "affected":
 		all, err := fetchAffectedWallets(apiKey, mint)
 		checkFatal(err)
 		writeWalletsJSON(all, "json/affected.json")
 	case "history":
-		all, err := fetchAffectedWalletHistories(apiKey, mint)
+		fileName := args[1]
+		all, err := fetchWalletHistories(apiKey, mint, fileName)
 		checkFatal(err)
-		writeWalletHistoriesJSON(all, "json/histories.json")
+		writeWalletHistoriesJSON(all, fmt.Sprintf("json/%s_histories.json", fileName))
 	case "wallet":
 		if len(args) < 2 {
 			log.Fatal("Usage: go run main.go snapshot wallet <address>")
@@ -89,11 +97,11 @@ func Run(args []string) {
 	}
 }
 
-func fetchAffectedWalletHistories(apiKey, mint string) (map[string]model.WalletHistory, error) {
+func fetchWalletHistories(apiKey, mint, fileName string) (map[string]model.WalletHistory, error) {
 	fmt.Println("API Key:", apiKey)
 	fmt.Println("Token Address:", mint)
 
-	data, err := os.ReadFile("json/affected.json")
+	data, err := os.ReadFile(fmt.Sprintf("json/%s.json", fileName))
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +111,7 @@ func fetchAffectedWalletHistories(apiKey, mint string) (map[string]model.WalletH
 		return nil, err
 	}
 
-	affectedWalletHistories := make(map[string]model.WalletHistory)
+	walletHistories := make(map[string]model.WalletHistory)
 
 	for _, wallet := range wallets {
 		swapTxs, err := fetchWalletTransactions(apiKey, mint, wallet)
@@ -114,11 +122,169 @@ func fetchAffectedWalletHistories(apiKey, mint string) (map[string]model.WalletH
 			continue
 		}
 
-		affectedWalletHistories[wallet] = swapHistory
+		walletHistories[wallet] = swapHistory
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	return affectedWalletHistories, nil
+	return walletHistories, nil
+}
+
+// go run main.go wallet <address>
+func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, error) {
+	var all []HeliusTransaction
+	before := ""
+	total := 0
+
+	for {
+		url := fmt.Sprintf("https://api.helius.xyz/v0/addresses/%s/transactions?api-key=%s&limit=100", wallet, apiKey)
+		if before != "" {
+			url += "&before=" + before
+		}
+
+		resp, err := http.Get(url)
+		checkFatal(err)
+
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		checkFatal(err)
+
+		var txs []HeliusTransaction
+		if err := json.Unmarshal(body, &txs); err != nil {
+			return nil, err
+		}
+
+		total += len(txs)
+		if total > 500 {
+			fmt.Printf("Skipping wallet %s: exceeded 500 transactions\n", wallet)
+			return nil, nil
+		}
+
+		// filter for our mint only
+		for _, tx := range txs {
+			if tx.Timestamp < TokenOrigin {
+				return all, nil // No relevant transactions before origin
+			}
+
+			for _, transfer := range tx.TokenTransfers {
+				if transfer.Mint == mint {
+					all = append(all, tx)
+					break
+				}
+			}
+		}
+
+		walletHistory := buildWalletHistoryFromTransactions(txs, wallet, mint)
+		printWalletHistory(walletHistory)
+
+		if len(txs) < 100 {
+			break
+		}
+
+		// Passes signature of the last transaction in each page
+		// as the `before` parameter on the next request, stepping
+		// further back in time until we reach the crash timestamp.
+		before = txs[len(txs)-1].Signature
+		time.Sleep(400 * time.Millisecond) // to avoid rate limit
+	}
+
+	return all, nil
+}
+
+func buildWalletHistoryFromTransactions(txs []HeliusTransaction, wallet, mint string) model.WalletHistory {
+	var history model.WalletHistory
+
+	fmt.Println("WALLET", wallet)
+	for _, tx := range txs {
+		var solIn, solOut, tokenIn, tokenOut float64
+
+		for _, transfer := range tx.TokenTransfers {
+			// SOL leaving the wallet (buy side)
+			if transfer.Mint == WrappedSOL && transfer.FromUserAccount == wallet {
+				solOut += transfer.TokenAmount
+			}
+			// SOL arriving at the wallet (sell side)
+			if transfer.Mint == WrappedSOL && transfer.ToUserAccount == wallet {
+				solIn += transfer.TokenAmount
+			}
+			// tokens arriving at the wallet
+			if transfer.Mint == mint && transfer.ToUserAccount == wallet {
+				tokenIn += transfer.TokenAmount
+			}
+			// tokens leaving the wallet
+			if transfer.Mint == mint && transfer.FromUserAccount == wallet {
+				tokenOut += transfer.TokenAmount
+			}
+
+			// if tokenIn > 0 || tokenOut > 0 {
+			// 	printTransaction(tx)
+			// }
+		}
+
+		if tokenIn > 0 {
+			history.Buys = append(history.Buys, model.WalletEvent{
+				Source:      tx.Source,
+				Slot:        tx.Slot,
+				Timestamp:   tx.Timestamp,
+				SOLAmount:   solOut,
+				TokenAmount: tokenIn,
+			})
+		}
+		if tokenOut > 0 {
+			history.Sells = append(history.Sells, model.WalletEvent{
+				Source:      tx.Source,
+				Slot:        tx.Slot,
+				Timestamp:   tx.Timestamp,
+				SOLAmount:   solIn,
+				TokenAmount: tokenOut,
+			})
+		}
+	}
+
+	return history
+}
+
+func getEligible() ([]string, []string, error) {
+	var eligible, ineligible []string
+
+	claimData, err := os.ReadFile("json/claimed.json")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var claimedWallets []string
+	if err := json.Unmarshal(claimData, &claimedWallets); err != nil {
+		return nil, nil, err
+	}
+
+	affectedData, err := os.ReadFile("json/affected.json")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var affectedWallets []string
+	if err := json.Unmarshal(affectedData, &affectedWallets); err != nil {
+		return nil, nil, err
+	}
+
+	// Build a set from affectedWallets for O(1) lookups
+	affectedSet := make(map[string]struct{}, len(affectedWallets))
+	for _, wallet := range affectedWallets {
+		affectedSet[wallet] = struct{}{}
+	}
+
+	for _, wallet := range claimedWallets {
+		if wallet == "" { // in claimed.json for organizational purposes
+			continue
+		}
+		if _, found := affectedSet[wallet]; found {
+			eligible = append(eligible, wallet)
+		} else {
+			ineligible = append(ineligible, wallet)
+		}
+	}
+
+	return eligible, ineligible, nil
 }
 
 func fetchCurrentHolders(apiKey, mint string) ([]TokenAccount, error) {
@@ -163,7 +329,7 @@ func fetchCurrentHolders(apiKey, mint string) ([]TokenAccount, error) {
 	}
 
 	for _, account := range all {
-		fmt.Println(account.Owner, account.Amount)
+		fmt.Println(account.Address, account.Mint, account.Owner, account.Amount)
 	}
 
 	return all, nil
@@ -228,120 +394,6 @@ func fetchAffectedWallets(apiKey, mint string) ([]string, error) {
 	}
 
 	return result, nil
-}
-
-// go run main.go wallet <address>
-func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, error) {
-	var all []HeliusTransaction
-	before := ""
-	total := 0
-
-	for {
-		url := fmt.Sprintf("https://api.helius.xyz/v0/addresses/%s/transactions?api-key=%s&limit=100", wallet, apiKey)
-		if before != "" {
-			url += "&before=" + before
-		}
-
-		resp, err := http.Get(url)
-		checkFatal(err)
-
-		defer resp.Body.Close()
-
-		body, err := io.ReadAll(resp.Body)
-		checkFatal(err)
-
-		var txs []HeliusTransaction
-		if err := json.Unmarshal(body, &txs); err != nil {
-			return nil, err
-		}
-
-		total += len(txs)
-		if total > 500 {
-			fmt.Printf("Skipping wallet %s: exceeded 500 transactions\n", wallet)
-			return nil, nil
-		}
-
-		// filter for our mint only
-		for _, tx := range txs {
-			if tx.Timestamp < TokenOrigin {
-				return all, nil // No relevant transactions before origin
-			}
-
-			for _, transfer := range tx.TokenTransfers {
-				if transfer.Mint == mint {
-					all = append(all, tx)
-					break
-				}
-			}
-		}
-
-		walletHistory := buildWalletHistoryFromTransactions(txs, wallet, mint)
-		printWalletHistory(walletHistory)
-
-		if len(txs) < 100 {
-			break
-		}
-
-		// Passes signature of the last transaction in each page
-		// as the `before` parameter on the next request, stepping
-		// further back in time until we reach the crash timestamp.
-		before = txs[len(txs)-1].Signature
-		time.Sleep(200 * time.Millisecond) // to avoid rate limit
-	}
-
-	return all, nil
-}
-
-func buildWalletHistoryFromTransactions(txs []HeliusTransaction, wallet, mint string) model.WalletHistory {
-	var history model.WalletHistory
-
-	for _, tx := range txs {
-		var solIn, solOut, tokenIn, tokenOut float64
-
-		for _, transfer := range tx.TokenTransfers {
-			// SOL leaving the wallet (buy side)
-			if transfer.Mint == WrappedSOL && transfer.FromUserAccount == wallet {
-				solOut += transfer.TokenAmount
-			}
-			// SOL arriving at the wallet (sell side)
-			if transfer.Mint == WrappedSOL && transfer.ToUserAccount == wallet {
-				solIn += transfer.TokenAmount
-			}
-			// tokens arriving at the wallet
-			if transfer.Mint == mint && transfer.ToUserAccount == wallet {
-				tokenIn += transfer.TokenAmount
-			}
-			// tokens leaving the wallet
-			if transfer.Mint == mint && transfer.FromUserAccount == wallet {
-				tokenOut += transfer.TokenAmount
-			}
-
-			if tokenIn > 0 || tokenOut > 0 {
-				printTransaction(tx)
-			}
-		}
-
-		if tokenIn > 0 {
-			history.Buys = append(history.Buys, model.WalletEvent{
-				Source:      tx.Source,
-				Slot:        tx.Slot,
-				Timestamp:   tx.Timestamp,
-				SOLAmount:   solOut,
-				TokenAmount: tokenIn,
-			})
-		}
-		if tokenOut > 0 {
-			history.Sells = append(history.Sells, model.WalletEvent{
-				Source:      tx.Source,
-				Slot:        tx.Slot,
-				Timestamp:   tx.Timestamp,
-				SOLAmount:   solIn,
-				TokenAmount: tokenOut,
-			})
-		}
-	}
-
-	return history
 }
 
 func printWalletHistory(wh model.WalletHistory) {

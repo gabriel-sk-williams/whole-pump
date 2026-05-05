@@ -4,6 +4,11 @@ package model
 // Shared structs
 //
 
+type Holder struct {
+	Wallet string
+	Tokens float64
+}
+
 type WalletEvent struct {
 	Source      string
 	Slot        int64
@@ -23,4 +28,9 @@ type Position struct {
 	SOL           float64
 	Token         float64
 	PercentSupply float64
+}
+
+type EligibilityResult struct {
+	Eligible   []string `json:"eligible"`
+	Ineligible []string `json:"ineligible"`
 }
