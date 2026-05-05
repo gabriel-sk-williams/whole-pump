@@ -90,11 +90,60 @@ func Run(args []string) {
 			log.Fatal("Usage: go run main.go snapshot wallet <address>")
 		}
 		wallet := args[1]
-		_, err := fetchWalletTransactions(apiKey, mint, wallet)
+		walletTxs, err := fetchWalletTransactions(apiKey, mint, wallet)
 		checkFatal(err)
+
+		swapHistory := buildWalletHistoryFromTransactions(walletTxs, wallet, mint)
+
+		singleHistory := make(map[string]model.WalletHistory)
+		singleHistory[wallet] = swapHistory
+
+		writeWalletHistoriesJSON(singleHistory, "json/single_history.json")
+	case "birdeye":
+		err := getBirdeyePrices(mint)
+		check(err)
 	default:
 		log.Fatalf("Unknown command: %s", os.Args[1])
 	}
+}
+
+func getBirdeyePrices(mint string) error {
+	data, err := os.ReadFile("json/single_history.json")
+	checkFatal(err)
+
+	var walletHistories map[string]model.WalletHistory
+	if err := json.Unmarshal(data, &walletHistories); err != nil {
+		checkFatal(err)
+	}
+
+	// ticker := time.NewTicker(time.Second) // 60 ticks/min = 60rpm
+	// defer ticker.Stop()
+
+	for wallet, history := range walletHistories {
+		fmt.Println(wallet)
+		for _, buy := range history.Buys {
+			fmt.Println(buy)
+			if buy.SOLAmount == 0 {
+				time.Sleep(time.Second)
+				price, err := GetPrice(mint, buy.Timestamp)
+				check(err)
+				fmt.Println("buy price", price)
+			}
+		}
+
+		for _, sell := range history.Sells {
+			fmt.Println(sell)
+			if sell.SOLAmount == 0 {
+				time.Sleep(time.Second)
+				fmt.Println("fetch birdeye", sell.Timestamp)
+				price, err := GetPrice(mint, sell.Timestamp)
+				check(err)
+				fmt.Println("sell price", price)
+			}
+		}
+	}
+
+	return nil
 }
 
 func fetchWalletHistories(apiKey, mint, fileName string) (map[string]model.WalletHistory, error) {

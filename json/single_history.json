@@ -1,0 +1,29 @@
+{
+  "4UK5njEDyNKFA36b4b67VAE6gC4ne8f7tJRiL5WDAXyc": {
+    "Buys": [
+      {
+        "Source": "OKX_DEX_ROUTER",
+        "Slot": 415066589,
+        "Timestamp": 1776923000,
+        "SOLAmount": 0,
+        "TokenAmount": 4833932.795155
+      },
+      {
+        "Source": "OKX_DEX_ROUTER",
+        "Slot": 415066440,
+        "Timestamp": 1776922939,
+        "SOLAmount": 0,
+        "TokenAmount": 5281045.918524
+      }
+    ],
+    "Sells": [
+      {
+        "Source": "DFLOW",
+        "Slot": 415320764,
+        "Timestamp": 1777023680,
+        "SOLAmount": 0.837029667,
+        "TokenAmount": 10114978.713679
+      }
+    ]
+  }
+}
