@@ -32,6 +32,16 @@ type HeliusResponse struct {
 	} `json:"result"`
 }
 
+type TokenBalanceChange struct {
+	UserAccount    string `json:"userAccount"`
+	TokenAccount   string `json:"tokenAccount"`
+	Mint           string `json:"mint"`
+	RawTokenAmount struct {
+		TokenAmount string `json:"tokenAmount"`
+		Decimals    int    `json:"decimals"`
+	} `json:"rawTokenAmount"`
+}
+
 type TokenTransfer struct {
 	FromTokenAccount string  `json:"fromTokenAccount"`
 	ToTokenAccount   string  `json:"toTokenAccount"`
@@ -41,13 +51,27 @@ type TokenTransfer struct {
 	Mint             string  `json:"mint"`
 }
 
+type NativeTransfer struct {
+	FromUserAccount string `json:"fromUserAccount"`
+	ToUserAccount   string `json:"toUserAccount"`
+	Amount          int64  `json:"amount"` // lamports
+}
+
+type AccountData struct {
+	Account             string               `json:"account"`
+	NativeBalanceChange int64                `json:"nativeBalanceChange"` // lamports, negative = SOL left wallet
+	TokenBalanceChanges []TokenBalanceChange `json:"tokenBalanceChanges"`
+}
+
 type HeliusTransaction struct {
-	Signature      string          `json:"signature"`
-	Timestamp      int64           `json:"timestamp"`
-	Slot           int64           `json:"slot"`
-	Type           string          `json:"type"`
-	Source         string          `json:"source"`
-	TokenTransfers []TokenTransfer `json:"tokenTransfers"`
+	Signature       string           `json:"signature"`
+	Timestamp       int64            `json:"timestamp"`
+	Slot            int64            `json:"slot"`
+	Type            string           `json:"type"`
+	Source          string           `json:"source"`
+	TokenTransfers  []TokenTransfer  `json:"tokenTransfers"`
+	NativeTransfers []NativeTransfer `json:"nativeTransfers"`
+	AccountData     []AccountData    `json:"accountData"`
 }
 
 // Jupiter: JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4
@@ -90,8 +114,16 @@ func Run(args []string) {
 			log.Fatal("Usage: go run main.go snapshot wallet <address>")
 		}
 		wallet := args[1]
-		_, err := fetchWalletTransactions(apiKey, mint, wallet)
+		walletTxs, err := fetchWalletTransactions(apiKey, mint, wallet)
 		checkFatal(err)
+
+		swapHistory := buildWalletHistoryFromTransactions(walletTxs, wallet, mint)
+
+		singleHistory := make(map[string]model.WalletHistory)
+		singleHistory[wallet] = swapHistory
+
+		writeWalletHistoriesJSON(singleHistory, "json/single_history.json")
+
 	default:
 		log.Fatalf("Unknown command: %s", os.Args[1])
 	}
@@ -130,6 +162,7 @@ func fetchWalletHistories(apiKey, mint, fileName string) (map[string]model.Walle
 }
 
 // go run main.go wallet <address>
+// go run main.go snapshot wallet 4UK5njEDyNKFA36b4b67VAE6gC4ne8f7tJRiL5WDAXyc
 func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, error) {
 	var all []HeliusTransaction
 	before := ""
@@ -174,8 +207,8 @@ func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, 
 			}
 		}
 
-		walletHistory := buildWalletHistoryFromTransactions(txs, wallet, mint)
-		printWalletHistory(walletHistory)
+		//walletHistory := buildWalletHistoryFromTransactions(txs, wallet, mint)
+		//printWalletHistory(walletHistory)
 
 		if len(txs) < 100 {
 			break
@@ -217,16 +250,42 @@ func buildWalletHistoryFromTransactions(txs []HeliusTransaction, wallet, mint st
 			}
 
 			// if tokenIn > 0 || tokenOut > 0 {
-			// 	printTransaction(tx)
+			//		printTransaction(tx)
 			// }
 		}
+
+		for _, acc := range tx.AccountData {
+			fmt.Printf("Account: %s | NativeBalanceChange: %d\n", acc.Account, acc.NativeBalanceChange)
+			for _, tbc := range acc.TokenBalanceChanges {
+				fmt.Printf("  Token: %s | Amount: %s | User: %s\n", tbc.Mint, tbc.RawTokenAmount.TokenAmount, tbc.UserAccount)
+			}
+		}
+
+		// --- Native SOL transfers (catches aggregator routes that never wrap SOL) ---
+		for _, native := range tx.NativeTransfers {
+
+			//fmt.Println("TRANSACTION")
+			//fmt.Println(native)
+
+			if native.FromUserAccount == wallet {
+				solOut += float64(native.Amount) / 1e9
+			}
+			if native.ToUserAccount == wallet {
+				solIn += float64(native.Amount) / 1e9
+			}
+		}
+
+		// Native transfers are noisy — they include fees, rent, etc.
+		// Deduplicate against wSOL amounts already counted, and subtract
+		// the tx fee so you're not double-counting lamport noise.
+		// A cleaner alternative (see note below) is to use accountData diffs.
 
 		if tokenIn > 0 {
 			history.Buys = append(history.Buys, model.WalletEvent{
 				Source:      tx.Source,
 				Slot:        tx.Slot,
 				Timestamp:   tx.Timestamp,
-				SOLAmount:   solOut,
+				SOLAmount:   solSpentByWallet(tx, wallet),
 				TokenAmount: tokenIn,
 			})
 		}
@@ -235,7 +294,7 @@ func buildWalletHistoryFromTransactions(txs []HeliusTransaction, wallet, mint st
 				Source:      tx.Source,
 				Slot:        tx.Slot,
 				Timestamp:   tx.Timestamp,
-				SOLAmount:   solIn,
+				SOLAmount:   solReceivedByWallet(tx, wallet),
 				TokenAmount: tokenOut,
 			})
 		}
@@ -243,6 +302,10 @@ func buildWalletHistoryFromTransactions(txs []HeliusTransaction, wallet, mint st
 
 	return history
 }
+
+//
+// Get Lists
+//
 
 func getEligible() ([]string, []string, error) {
 	var eligible, ineligible []string
@@ -394,6 +457,30 @@ func fetchAffectedWallets(apiKey, mint string) ([]string, error) {
 	}
 
 	return result, nil
+}
+
+func solSpentByWallet(tx HeliusTransaction, wallet string) float64 {
+	for _, acc := range tx.AccountData {
+		if acc.Account == wallet {
+			// nativeBalanceChange is negative when SOL left the wallet
+			// already accounts for fees, rent, everything
+			if acc.NativeBalanceChange < 0 {
+				return float64(-acc.NativeBalanceChange) / 1e9
+			}
+		}
+	}
+	return 0
+}
+
+func solReceivedByWallet(tx HeliusTransaction, wallet string) float64 {
+	for _, acc := range tx.AccountData {
+		if acc.Account == wallet {
+			if acc.NativeBalanceChange > 0 {
+				return float64(acc.NativeBalanceChange) / 1e9
+			}
+		}
+	}
+	return 0
 }
 
 func printWalletHistory(wh model.WalletHistory) {
