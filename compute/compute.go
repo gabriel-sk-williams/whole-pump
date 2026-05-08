@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"time"
 	"whole-pump/model"
+
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 )
 
 // go run main.go compute json/histories.json
@@ -18,13 +22,15 @@ func Run(args []string) {
 
 	path := args[0]
 
-	histories, err := loadHistories(path)
+	histories, err := loadHistories(fmt.Sprintf("%s_histories_enriched.json", path))
 	checkFatal(err)
 
 	fmt.Println("lenymo", len(histories))
-	// printNumberOfTransactions(histories)
 
-	computeLosses(histories)
+	totalPositions := computeTotalPositions(histories)
+	checkFatal(err)
+
+	computeLosses(totalPositions)
 }
 
 func loadHistories(path string) (map[string]model.WalletHistory, error) {
@@ -41,44 +47,95 @@ func loadHistories(path string) (map[string]model.WalletHistory, error) {
 	return histories, nil
 }
 
-func printNumberOfTransactions(histories map[string]model.WalletHistory) {
-	for wallet, history := range histories {
-		numberOfBuys, numberOfSells, total := computeNumberOfTransactions(history)
-		fmt.Printf("%s txs: %d + %d = %d  \n", truncate(wallet), numberOfBuys, numberOfSells, total)
-	}
-}
+func computeNumberOfTransactions(wh model.WalletHistory, t int64) (int, int, int) {
+	var numberOfBuys, numberOfSells, total int
 
-func computeNumberOfTransactions(wh model.WalletHistory) (int, int, int) {
-	numberOfBuys := len(wh.Buys)
-	numberOfSells := len(wh.Sells)
-	total := numberOfBuys + numberOfSells
+	for _, buy := range wh.Buys {
+		if buy.Timestamp < t {
+			numberOfBuys += 1
+			total += 1
+		}
+	}
+
+	for _, sell := range wh.Sells {
+		if sell.Timestamp < t {
+			numberOfSells += 1
+			total += 1
+		}
+	}
+
 	return numberOfBuys, numberOfSells, total
 }
 
-func computeLosses(histories map[string]model.WalletHistory) {
-	var positionsBeforeCrash []model.Position
+func computeTotalPositions(histories map[string]model.WalletHistory) map[string]model.TotalPosition {
+	totalPositions := make(map[string]model.TotalPosition)
+	now := time.Now().Unix()
 
 	for wallet, history := range histories {
-		_, _, total := computeNumberOfTransactions(history)
-		solPosition, tokenPosition := computePositionBeforeTimestamp(history, AnnouncementTimestamp) //time.Now().Unix()
-		percentSupply := tokenPosition / 1000000000.0 * 100
+		_, _, totalBefore := computeNumberOfTransactions(history, AnnouncementTimestamp)
+		solBefore, tokenBefore := computePositionBeforeTimestamp(history, AnnouncementTimestamp)
+		percentSupplyBefore := percentSupply(tokenBefore)
 
-		position := model.Position{Wallet: wallet, Transactions: total, SOL: solPosition, Token: tokenPosition, PercentSupply: percentSupply}
-		positionsBeforeCrash = append(positionsBeforeCrash, position)
+		_, _, totalAfter := computeNumberOfTransactions(history, now)
+		solNow, tokenNow := computePositionBeforeTimestamp(history, time.Now().Unix())
+		percentSupplyNow := percentSupply(tokenNow)
+
+		positionBefore := model.Position{Transactions: totalBefore, SOL: solBefore, Token: tokenBefore, PercentSupply: percentSupplyBefore}
+		positionNow := model.Position{Transactions: totalAfter, SOL: solNow, Token: tokenNow, PercentSupply: percentSupplyNow}
+
+		totalPositions[wallet] = model.TotalPosition{PositionBefore: positionBefore, PositionNow: positionNow}
 	}
 
-	slices.SortFunc(positionsBeforeCrash, func(a, b model.Position) int {
-		return cmp.Compare(a.SOL, b.SOL)
+	return totalPositions
+}
+
+func computeLosses(positions map[string]model.TotalPosition) {
+	var allLosses []model.ComputedLoss
+
+	var totalLosses float64
+	for wallet, tp := range positions {
+		if tp.PositionNow.SOL < 0 {
+			computedLoss := model.ComputedLoss{Wallet: wallet, Loss: tp.PositionNow.SOL}
+			totalLosses += computedLoss.Loss
+			allLosses = append(allLosses, computedLoss)
+		}
+	}
+
+	slices.SortFunc(allLosses, func(a, b model.ComputedLoss) int {
+		return cmp.Compare(a.Loss, b.Loss)
 	})
 
-	var totalTokens float64
-	for _, p := range positionsBeforeCrash {
-		totalTokens += p.Token
-		fmt.Printf("%s (%d txs) \n    SOL: %f\n    Tokens: %f  (%f%%) \n", truncate(p.Wallet), p.Transactions, p.SOL, p.Token, p.PercentSupply)
+	totalPool := 100_000_000.0
+	fmt.Println("Total Loss: ", totalLosses)
+	fmt.Printf("Total Tokens: %f \n", totalPool)
+	for _, cl := range allLosses {
+		position := positions[cl.Wallet]
+		tokensBefore := position.PositionBefore.Token
+		percentageLoss := cl.Loss / totalLosses * 100
+		recommendedTokens := recommendTokensAirdrop(percentageLoss, tokensBefore, totalPool)
+		displayName := displayName(cl.Wallet)
+		fmt.Printf("%s: %f (%f%%)\n", displayName, cl.Loss, percentageLoss)
+		fmt.Printf("   %s Tokens (from %s)\n", formatWithCommas(recommendedTokens), formatWithCommas(tokensBefore))
 	}
 
-	totalPercentSupply := totalTokens / 1000000000.0 * 100
-	fmt.Printf("Total Tokens: %f  (%f%%) \n", totalTokens, totalPercentSupply)
+	fmt.Println()
+	for _, cl := range allLosses {
+		position := positions[cl.Wallet]
+		tokensBefore := position.PositionBefore.Token
+		percentageLoss := cl.Loss / totalLosses * 100
+		recommendedTokens := recommendTokensAirdrop(percentageLoss, tokensBefore, totalPool)
+		displayName := displayName(cl.Wallet)
+		fmt.Printf("| %s | | %d | | |\n", displayName, formatWithoutCommas(recommendedTokens))
+	}
+}
+
+func recommendTokensAirdrop(percentageLoss float64, tokensBefore float64, totalPool float64) float64 {
+	recommendedTokens := percentageLoss * totalPool / 100.0
+	return min(recommendedTokens, tokensBefore)
+}
+
+func percentSupply(amount float64) float64 {
+	return amount / 1000000000.0 * 100
 }
 
 func computePositionBeforeTimestamp(wh model.WalletHistory, t int64) (float64, float64) {
@@ -105,11 +162,28 @@ func computePositionBeforeTimestamp(wh model.WalletHistory, t int64) (float64, f
 	return solPosition, tokenPosition
 }
 
+func displayName(contact string) string {
+	if len(contact) > 40 {
+		return truncate(contact)
+	} else {
+		return contact
+	}
+}
+
 func truncate(walletAddress string) string {
 	front := walletAddress[:4]
 	back := walletAddress[40:]
 
 	return fmt.Sprintf("%s...%s", front, back)
+}
+
+func formatWithCommas(n float64) string {
+	p := message.NewPrinter(language.English)
+	return p.Sprintf("%d", int64(n))
+}
+
+func formatWithoutCommas(n float64) int64 {
+	return int64(n)
 }
 
 func checkFatal(err error) {

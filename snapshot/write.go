@@ -11,7 +11,7 @@ func NormalizeTokenAmount(amount int64) float64 {
 	return float64(amount) / math.Pow(10, 6)
 }
 
-func writeHoldersJSON(accounts []TokenAccount, filename string) error {
+func writeTokenAccountsToHoldersJSON(accounts []TokenAccount, filename string) error {
 
 	var holders []model.Holder
 	for _, account := range accounts {
@@ -19,6 +19,13 @@ func writeHoldersJSON(accounts []TokenAccount, filename string) error {
 		holders = append(holders, holder)
 	}
 
+	data, err := json.MarshalIndent(holders, "", "  ")
+	check(err)
+
+	return os.WriteFile(filename, data, 0644)
+}
+
+func writeHoldersJSON(holders []model.Holder, filename string) error {
 	data, err := json.MarshalIndent(holders, "", "  ")
 	check(err)
 

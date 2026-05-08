@@ -23,14 +23,23 @@ type WalletHistory struct {
 }
 
 type Position struct {
-	Wallet        string
 	Transactions  int
 	SOL           float64
 	Token         float64
 	PercentSupply float64
 }
 
-type EligibilityResult struct {
-	Eligible   []string `json:"eligible"`
-	Ineligible []string `json:"ineligible"`
+type TotalPosition struct {
+	PositionBefore Position
+	PositionNow    Position
+}
+
+type ComputedLoss struct {
+	Wallet string
+	Loss   float64
+}
+
+type MultiWallet struct {
+	Contact string
+	Wallets []string
 }

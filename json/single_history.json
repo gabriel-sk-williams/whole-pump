@@ -1,18 +1,18 @@
 {
-  "4UK5njEDyNKFA36b4b67VAE6gC4ne8f7tJRiL5WDAXyc": {
+  "NK5WDAXyc4UK5njEDyb4b67VAFA36JRiLE6gC4ne8f7t": {
     "Buys": [
       {
         "Source": "OKX_DEX_ROUTER",
         "Slot": 415066589,
-        "Timestamp": 1776923000,
-        "SOLAmount": 0,
+        "Timestamp": 1776924000,
+        "SOLAmount": 1.23,
         "TokenAmount": 4833932.795155
       },
       {
         "Source": "OKX_DEX_ROUTER",
         "Slot": 415066440,
-        "Timestamp": 1776922939,
-        "SOLAmount": 0,
+        "Timestamp": 1776928939,
+        "SOLAmount": 1.45,
         "TokenAmount": 5281045.918524
       }
     ],

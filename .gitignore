@@ -33,18 +33,29 @@ go.work.sum
 
 # json
 json/affected.json
+json/bots_histories_enriched.json
+json/bots_histories.json
 json/bots.json
+json/claimed_holders.json
 json/claimed.json
+json/compiled_histories_enriched.json
+json/eligible_histories_enriched.json
 json/eligible_histories.json
 json/eligible.json
+json/groups_histories_enriched.json
+json/groups_histories.json
+json/groups.json
 json/histories.json
 json/holders.json
 json/ineligible.json
+json/multiple_histories_enriched.json
 json/multiple.json
+json/single_history_enriched.json
+json/single_history.json
 json/test.json
 json/thirdparty_histories.json
 json/thirdparty.json
-
+multiple/
 
 # Compiled binary
 whole-pump

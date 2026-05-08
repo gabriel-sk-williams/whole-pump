@@ -56,7 +56,6 @@ type HeliusTransaction struct {
 // Fomo wallet: AgmLJB...zn51
 
 // go run main.go snapshot wallet <address>
-
 const PumpAMM = "B56BWXyJPZABa79JPV3AmghFieK8zLaLV1iaUmq5PvKd"
 const WrappedSOL = "So11111111111111111111111111111111111111112"
 const AnnouncementTimestamp = 1776976115
@@ -67,6 +66,12 @@ func Run(args []string) {
 	mint := os.Getenv("TOKEN_ADDRESS")
 
 	switch args[0] {
+	case "positions":
+		fmt.Println("positions")
+	case "ch":
+		claimedHolders, err := getClaimedHolders()
+		checkFatal(err)
+		writeHoldersJSON(claimedHolders, "json/claimed_holders.json")
 	case "eligible":
 		eligible, ineligible, err := getEligible()
 		checkFatal(err)
@@ -75,11 +80,30 @@ func Run(args []string) {
 	case "holders":
 		all, err := fetchCurrentHolders(apiKey, mint)
 		checkFatal(err)
-		writeHoldersJSON(all, "json/holders.json")
+		writeTokenAccountsToHoldersJSON(all, "json/holders.json")
 	case "affected":
 		all, err := fetchAffectedWallets(apiKey, mint)
 		checkFatal(err)
 		writeWalletsJSON(all, "json/affected.json")
+	case "compile":
+		groupData, err := os.ReadFile("json/groups_histories_enriched.json")
+		checkFatal(err)
+
+		var groupHistories map[string]model.WalletHistory
+		if err := json.Unmarshal(groupData, &groupHistories); err != nil {
+			checkFatal(err)
+		}
+
+		mwData, err := os.ReadFile("json/multiple.json")
+		checkFatal(err)
+
+		var multiWallets []model.MultiWallet
+		if err := json.Unmarshal(mwData, &multiWallets); err != nil {
+			checkFatal(err)
+		}
+
+		compiledHistories := compileWallets(groupHistories, multiWallets)
+		writeWalletHistoriesJSON(compiledHistories, "json/multiple_histories_enriched.json")
 	case "history":
 		fileName := args[1]
 		all, err := fetchWalletHistories(apiKey, mint, fileName)
@@ -100,15 +124,38 @@ func Run(args []string) {
 
 		writeWalletHistoriesJSON(singleHistory, "json/single_history.json")
 	case "birdeye":
-		err := getBirdeyePrices(mint)
+		fileName := args[1]
+		enrichedHistories, err := getBirdeyePrices(mint, fileName)
 		check(err)
+		writeWalletHistoriesJSON(enrichedHistories, fmt.Sprintf("json/%s_histories_enriched.json", fileName))
+		checkFatal(err)
 	default:
 		log.Fatalf("Unknown command: %s", os.Args[1])
 	}
 }
 
-func getBirdeyePrices(mint string) error {
-	data, err := os.ReadFile("json/single_history.json")
+func compileWallets(groupHistories map[string]model.WalletHistory, multiWallets []model.MultiWallet) map[string]model.WalletHistory {
+
+	compiledHistories := make(map[string]model.WalletHistory)
+
+	for _, mw := range multiWallets {
+		var combined model.WalletHistory
+
+		for _, wallet := range mw.Wallets {
+			if history, ok := groupHistories[wallet]; ok {
+				combined.Buys = append(combined.Buys, history.Buys...)
+				combined.Sells = append(combined.Sells, history.Sells...)
+			}
+		}
+
+		compiledHistories[mw.Contact] = combined
+	}
+
+	return compiledHistories
+}
+
+func getBirdeyePrices(mint, fileName string) (map[string]model.WalletHistory, error) {
+	data, err := os.ReadFile(fmt.Sprintf("json/%s_histories.json", fileName)) // eligible_histories.json
 	checkFatal(err)
 
 	var walletHistories map[string]model.WalletHistory
@@ -116,36 +163,50 @@ func getBirdeyePrices(mint string) error {
 		checkFatal(err)
 	}
 
-	// ticker := time.NewTicker(time.Second) // 60 ticks/min = 60rpm
-	// defer ticker.Stop()
-
 	for wallet, history := range walletHistories {
+		time.Sleep(time.Second)
 		fmt.Println(wallet)
-		for _, buy := range history.Buys {
+		for i, buy := range history.Buys {
 			fmt.Println(buy)
 			if buy.SOLAmount == 0 {
 				time.Sleep(time.Second)
-				price, err := GetPrice(mint, buy.Timestamp)
+				tokenPrice, err := GetPrice(mint, buy.Timestamp)
 				check(err)
-				fmt.Println("buy price", price)
+				fmt.Printf("%f", tokenPrice)
+
+				time.Sleep(time.Second)
+				solPrice, err := GetPrice(WrappedSOL, buy.Timestamp)
+				check(err)
+				fmt.Println(solPrice)
+
+				history.Buys[i].SOLAmount = (buy.TokenAmount * tokenPrice) / solPrice
+
 			}
 		}
 
-		for _, sell := range history.Sells {
+		for j, sell := range history.Sells {
 			fmt.Println(sell)
 			if sell.SOLAmount == 0 {
 				time.Sleep(time.Second)
-				fmt.Println("fetch birdeye", sell.Timestamp)
-				price, err := GetPrice(mint, sell.Timestamp)
+				tokenPrice, err := GetPrice(mint, sell.Timestamp)
 				check(err)
-				fmt.Println("sell price", price)
+				fmt.Printf("%f", tokenPrice)
+
+				time.Sleep(time.Second)
+				solPrice, err := GetPrice(WrappedSOL, sell.Timestamp)
+				check(err)
+				fmt.Println(solPrice)
+
+				history.Sells[j].SOLAmount = (sell.TokenAmount * tokenPrice) / solPrice
 			}
 		}
 	}
 
-	return nil
+	return walletHistories, nil
 }
 
+// const AnnouncementTimestamp = 1776976115
+// const TokenOrigin = 1772006401 // Feb 25
 func fetchWalletHistories(apiKey, mint, fileName string) (map[string]model.WalletHistory, error) {
 	fmt.Println("API Key:", apiKey)
 	fmt.Println("Token Address:", mint)
@@ -178,12 +239,46 @@ func fetchWalletHistories(apiKey, mint, fileName string) (map[string]model.Walle
 	return walletHistories, nil
 }
 
+func fetchMultiWalletHistories(apiKey, mint, fileName string) (map[string]model.WalletHistory, error) {
+	fmt.Println("API Key:", apiKey)
+	fmt.Println("Token Address:", mint)
+
+	data, err := os.ReadFile(fileName)
+	if err != nil {
+		return nil, err
+	}
+
+	var wallets []string
+	if err := json.Unmarshal(data, &wallets); err != nil {
+		return nil, err
+	}
+
+	walletHistories := make(map[string]model.WalletHistory)
+
+	for _, wallet := range wallets {
+		swapTxs, err := fetchWalletTransactions(apiKey, mint, wallet)
+		check(err)
+
+		swapHistory := buildWalletHistoryFromTransactions(swapTxs, wallet, mint)
+		if len(swapHistory.Buys) == 0 && len(swapHistory.Sells) == 0 {
+			continue
+		}
+
+		walletHistories[wallet] = swapHistory
+		// time.Sleep(200 * time.Millisecond)
+		time.Sleep(time.Second)
+	}
+
+	return walletHistories, nil
+}
+
 // go run main.go wallet <address>
 func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, error) {
 	var all []HeliusTransaction
 	before := ""
 	total := 0
 
+	fmt.Println("WALLET", wallet)
 	for {
 		url := fmt.Sprintf("https://api.helius.xyz/v0/addresses/%s/transactions?api-key=%s&limit=100", wallet, apiKey)
 		if before != "" {
@@ -234,7 +329,7 @@ func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, 
 		// as the `before` parameter on the next request, stepping
 		// further back in time until we reach the crash timestamp.
 		before = txs[len(txs)-1].Signature
-		time.Sleep(400 * time.Millisecond) // to avoid rate limit
+		time.Sleep(1000 * time.Millisecond) // to avoid rate limit
 	}
 
 	return all, nil
@@ -243,7 +338,6 @@ func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, 
 func buildWalletHistoryFromTransactions(txs []HeliusTransaction, wallet, mint string) model.WalletHistory {
 	var history model.WalletHistory
 
-	fmt.Println("WALLET", wallet)
 	for _, tx := range txs {
 		var solIn, solOut, tokenIn, tokenOut float64
 
@@ -264,10 +358,6 @@ func buildWalletHistoryFromTransactions(txs []HeliusTransaction, wallet, mint st
 			if transfer.Mint == mint && transfer.FromUserAccount == wallet {
 				tokenOut += transfer.TokenAmount
 			}
-
-			// if tokenIn > 0 || tokenOut > 0 {
-			// 	printTransaction(tx)
-			// }
 		}
 
 		if tokenIn > 0 {
@@ -316,10 +406,26 @@ func getEligible() ([]string, []string, error) {
 		return nil, nil, err
 	}
 
+	botData, err := os.ReadFile("json/bots.json")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var botWallets []string
+	if err := json.Unmarshal(botData, &botWallets); err != nil {
+		return nil, nil, err
+	}
+
 	// Build a set from affectedWallets for O(1) lookups
 	affectedSet := make(map[string]struct{}, len(affectedWallets))
 	for _, wallet := range affectedWallets {
 		affectedSet[wallet] = struct{}{}
+	}
+
+	// Build a set from botWallets for O(1) lookups
+	botSet := make(map[string]struct{}, len(botWallets))
+	for _, wallet := range botWallets {
+		botSet[wallet] = struct{}{}
 	}
 
 	for _, wallet := range claimedWallets {
@@ -327,6 +433,9 @@ func getEligible() ([]string, []string, error) {
 			continue
 		}
 		if _, found := affectedSet[wallet]; found {
+			if _, bot := botSet[wallet]; bot { // exclude bot list
+				continue
+			}
 			eligible = append(eligible, wallet)
 		} else {
 			ineligible = append(ineligible, wallet)
@@ -334,6 +443,47 @@ func getEligible() ([]string, []string, error) {
 	}
 
 	return eligible, ineligible, nil
+}
+
+func getClaimedHolders() ([]model.Holder, error) {
+	var eligible []model.Holder
+
+	claimData, err := os.ReadFile("json/claimed.json")
+	if err != nil {
+		return nil, err
+	}
+
+	var claimedWallets []string
+	if err := json.Unmarshal(claimData, &claimedWallets); err != nil {
+		return nil, err
+	}
+
+	holderData, err := os.ReadFile("json/holders.json")
+	if err != nil {
+		return nil, err
+	}
+
+	var holdingWallets []model.Holder
+	if err := json.Unmarshal(holderData, &holdingWallets); err != nil {
+		return nil, err
+	}
+
+	// Build a set from affectedWallets for O(1) lookups
+	claimedSet := make(map[string]struct{}, len(claimedWallets))
+	for _, wallet := range claimedWallets {
+		if wallet != "" {
+			claimedSet[wallet] = struct{}{}
+		}
+
+	}
+
+	for _, holder := range holdingWallets {
+		if _, found := claimedSet[holder.Wallet]; found {
+			eligible = append(eligible, holder)
+		}
+	}
+
+	return eligible, nil
 }
 
 func fetchCurrentHolders(apiKey, mint string) ([]TokenAccount, error) {

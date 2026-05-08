@@ -37,7 +37,8 @@ func GetPrice(mint string, timestamp int64) (float64, error) {
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
-	fmt.Println(string(body))
+	// fmt.Println(string(body))
+
 	if err != nil {
 		return 0, fmt.Errorf("failed to read response: %w", err)
 	}
