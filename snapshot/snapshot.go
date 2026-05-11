@@ -145,6 +145,8 @@ func compileWallets(groupHistories map[string]model.WalletHistory, multiWallets 
 			if history, ok := groupHistories[wallet]; ok {
 				combined.Buys = append(combined.Buys, history.Buys...)
 				combined.Sells = append(combined.Sells, history.Sells...)
+				combined.Received = append(combined.Received, history.Received...)
+				combined.Sent = append(combined.Sent, history.Sent...)
 			}
 		}
 
@@ -299,10 +301,10 @@ func fetchWalletTransactions(apiKey, mint, wallet string) ([]HeliusTransaction, 
 		}
 
 		total += len(txs)
-		if total > 500 {
-			fmt.Printf("Skipping wallet %s: exceeded 500 transactions\n", wallet)
-			return nil, nil
-		}
+		// if total > 500 {
+		// 	fmt.Printf("Skipping wallet %s: exceeded 500 transactions\n", wallet)
+		// 	return nil, nil
+		// }
 
 		// filter for our mint only
 		for _, tx := range txs {
@@ -360,23 +362,45 @@ func buildWalletHistoryFromTransactions(txs []HeliusTransaction, wallet, mint st
 			}
 		}
 
+		// if tokenIn > 0 || tokenOut > 0 {
+		// 	printTransaction(tx)
+		// }
+
 		if tokenIn > 0 {
-			history.Buys = append(history.Buys, model.WalletEvent{
-				Source:      tx.Source,
-				Slot:        tx.Slot,
-				Timestamp:   tx.Timestamp,
-				SOLAmount:   solOut,
-				TokenAmount: tokenIn,
-			})
+			if tx.Type == "TRANSFER" {
+				for _, xfer := range tx.TokenTransfers {
+					history.Received = append(history.Received, model.Transfer{
+						Address:     xfer.FromTokenAccount,
+						TokenAmount: tokenIn,
+					})
+				}
+			} else {
+				history.Buys = append(history.Buys, model.WalletEvent{
+					Source:      tx.Source,
+					Type:        tx.Type,
+					Timestamp:   tx.Timestamp,
+					SOLAmount:   solOut,
+					TokenAmount: tokenIn,
+				})
+			}
 		}
 		if tokenOut > 0 {
-			history.Sells = append(history.Sells, model.WalletEvent{
-				Source:      tx.Source,
-				Slot:        tx.Slot,
-				Timestamp:   tx.Timestamp,
-				SOLAmount:   solIn,
-				TokenAmount: tokenOut,
-			})
+			if tx.Type == "TRANSFER" {
+				for _, xfer := range tx.TokenTransfers {
+					history.Sent = append(history.Sent, model.Transfer{
+						Address:     xfer.ToTokenAccount,
+						TokenAmount: tokenOut,
+					})
+				}
+			} else {
+				history.Sells = append(history.Sells, model.WalletEvent{
+					Source:      tx.Source,
+					Type:        tx.Type,
+					Timestamp:   tx.Timestamp,
+					SOLAmount:   solIn,
+					TokenAmount: tokenOut,
+				})
+			}
 		}
 	}
 
@@ -607,11 +631,10 @@ func printWalletHistory(wh model.WalletHistory) {
 
 func printTransaction(tx HeliusTransaction) {
 	fmt.Println(tx.Source)
-	fmt.Println(tx.Signature)
 	fmt.Println(tx.Type)
 	for _, xfer := range tx.TokenTransfers {
-		fmt.Println("From Token Account:", xfer.FromTokenAccount)
-		fmt.Println("To Token Account:", xfer.ToTokenAccount)
+		//fmt.Println("From Token Account:", xfer.FromTokenAccount)
+		//fmt.Println("To Token Account:", xfer.ToTokenAccount)
 		fmt.Println("From User Account:", xfer.FromUserAccount)
 		fmt.Println("To User Account:", xfer.ToUserAccount)
 		fmt.Println("Token Amount:", xfer.TokenAmount)

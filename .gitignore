@@ -55,7 +55,6 @@ json/single_history.json
 json/test.json
 json/thirdparty_histories.json
 json/thirdparty.json
-multiple/
 
 # Compiled binary
 whole-pump

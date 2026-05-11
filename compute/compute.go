@@ -83,21 +83,41 @@ func computeTotalPositions(histories map[string]model.WalletHistory) map[string]
 		positionBefore := model.Position{Transactions: totalBefore, SOL: solBefore, Token: tokenBefore, PercentSupply: percentSupplyBefore}
 		positionNow := model.Position{Transactions: totalAfter, SOL: solNow, Token: tokenNow, PercentSupply: percentSupplyNow}
 
-		totalPositions[wallet] = model.TotalPosition{PositionBefore: positionBefore, PositionNow: positionNow}
+		netTransfer := computeNetTransfers(history)
+
+		totalPositions[wallet] = model.TotalPosition{PositionBefore: positionBefore, PositionNow: positionNow, NetTransfer: netTransfer}
 	}
 
 	return totalPositions
 }
 
+func computeNetTransfers(history model.WalletHistory) float64 {
+	var netReceived, netSent float64
+
+	for _, rt := range history.Received {
+		netReceived += rt.TokenAmount
+	}
+
+	for _, st := range history.Sent {
+		netSent += st.TokenAmount
+	}
+
+	return netReceived - netSent
+}
+
 func computeLosses(positions map[string]model.TotalPosition) {
 	var allLosses []model.ComputedLoss
+	var winners []model.ComputedLoss
 
 	var totalLosses float64
 	for wallet, tp := range positions {
 		if tp.PositionNow.SOL < 0 {
-			computedLoss := model.ComputedLoss{Wallet: wallet, Loss: tp.PositionNow.SOL}
+			computedLoss := model.ComputedLoss{Wallet: wallet, Loss: tp.PositionNow.SOL, NetTransfer: tp.NetTransfer}
 			totalLosses += computedLoss.Loss
 			allLosses = append(allLosses, computedLoss)
+		} else {
+			computedLoss := model.ComputedLoss{Wallet: wallet, Loss: tp.PositionNow.SOL, NetTransfer: tp.NetTransfer}
+			winners = append(winners, computedLoss)
 		}
 	}
 
@@ -114,19 +134,46 @@ func computeLosses(positions map[string]model.TotalPosition) {
 		percentageLoss := cl.Loss / totalLosses * 100
 		recommendedTokens := recommendTokensAirdrop(percentageLoss, tokensBefore, totalPool)
 		displayName := displayName(cl.Wallet)
-		fmt.Printf("%s: %f (%f%%)\n", displayName, cl.Loss, percentageLoss)
+		fmt.Printf("%s\n", displayName)
+		fmt.Printf("   Realized Loss: %f (%f%%)\n", cl.Loss, percentageLoss)
 		fmt.Printf("   %s Tokens (from %s)\n", formatWithCommas(recommendedTokens), formatWithCommas(tokensBefore))
 	}
 
+	// for _, cl := range allLosses {
+	// 	position := positions[cl.Wallet]
+	// 	tokensBefore := position.PositionBefore.Token
+	// 	percentageLoss := cl.Loss / totalLosses * 100
+	// 	displayName := obfuscateName(cl.Wallet)
+	// 	fmt.Printf("%s\n", displayName)
+	// 	fmt.Printf("   Realized Loss: %f SOL (%f%% of cohort)\n", cl.Loss, percentageLoss)
+	// 	fmt.Printf("   Tokens held at announcement: %s \n", formatWithCommas(tokensBefore))
+	// }
+
 	fmt.Println()
+	var totalTokensHeldAtAnnouncement float64
 	for _, cl := range allLosses {
 		position := positions[cl.Wallet]
 		tokensBefore := position.PositionBefore.Token
+		totalTokensHeldAtAnnouncement += tokensBefore
 		percentageLoss := cl.Loss / totalLosses * 100
 		recommendedTokens := recommendTokensAirdrop(percentageLoss, tokensBefore, totalPool)
-		displayName := displayName(cl.Wallet)
-		fmt.Printf("| %s | | %d | | |\n", displayName, formatWithoutCommas(recommendedTokens))
+		displayName := cl.Wallet
+		fmt.Printf("| %s | | %d | %f | %d | | |\n", displayName, formatWithoutCommas(recommendedTokens), cl.Loss, formatWithoutCommas(cl.NetTransfer))
 	}
+
+	fmt.Println()
+	for _, winner := range winners {
+		position := positions[winner.Wallet]
+		tokensBefore := position.PositionBefore.Token
+		fmt.Printf("%s %f %d \n", winner.Wallet, winner.Loss, formatWithoutCommas(winner.NetTransfer))
+		fmt.Printf("   Tokens held at announcement: %s \n", formatWithCommas(tokensBefore))
+	}
+
+	fmt.Println()
+	fmt.Println()
+	fmt.Println("     Total Held:", formatWithCommas(totalTokensHeldAtAnnouncement))
+	fmt.Println()
+	fmt.Println()
 }
 
 func recommendTokensAirdrop(percentageLoss float64, tokensBefore float64, totalPool float64) float64 {
@@ -173,6 +220,21 @@ func displayName(contact string) string {
 func truncate(walletAddress string) string {
 	front := walletAddress[:4]
 	back := walletAddress[40:]
+
+	return fmt.Sprintf("%s...%s", front, back)
+}
+
+func obfuscateName(contact string) string {
+	if len(contact) > 40 {
+		return obfuscate(contact)
+	} else {
+		return contact
+	}
+}
+
+func obfuscate(walletAddress string) string {
+	front := walletAddress[4:8]
+	back := walletAddress[36:40]
 
 	return fmt.Sprintf("%s...%s", front, back)
 }

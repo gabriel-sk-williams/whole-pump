@@ -11,15 +11,22 @@ type Holder struct {
 
 type WalletEvent struct {
 	Source      string
-	Slot        int64
+	Type        string
 	Timestamp   int64
 	SOLAmount   float64
 	TokenAmount float64
 }
 
 type WalletHistory struct {
-	Buys  []WalletEvent
-	Sells []WalletEvent
+	Buys     []WalletEvent
+	Sells    []WalletEvent
+	Received []Transfer
+	Sent     []Transfer
+}
+
+type Transfer struct {
+	Address     string
+	TokenAmount float64
 }
 
 type Position struct {
@@ -32,11 +39,13 @@ type Position struct {
 type TotalPosition struct {
 	PositionBefore Position
 	PositionNow    Position
+	NetTransfer    float64
 }
 
 type ComputedLoss struct {
-	Wallet string
-	Loss   float64
+	Wallet      string
+	Loss        float64
+	NetTransfer float64
 }
 
 type MultiWallet struct {
